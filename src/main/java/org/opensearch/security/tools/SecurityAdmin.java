@@ -46,6 +46,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
@@ -84,13 +85,9 @@ import org.opensearch.ExceptionsHelper;
 import org.opensearch.OpenSearchException;
 import org.opensearch.OpenSearchStatusException;
 import org.opensearch.Version;
-import org.opensearch.action.admin.cluster.health.ClusterHealthRequest;
-import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.opensearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
 import org.opensearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.opensearch.action.admin.indices.settings.put.UpdateSettingsRequest;
-import org.opensearch.action.get.GetRequest;
-import org.opensearch.action.get.GetResponse;
 import org.opensearch.action.index.IndexRequest;
 import org.opensearch.action.support.WriteRequest.RefreshPolicy;
 import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
@@ -99,11 +96,21 @@ import org.opensearch.client.RequestOptions;
 import org.opensearch.client.Response;
 import org.opensearch.client.RestClient;
 import org.opensearch.client.RestClientBuilder;
-import org.opensearch.client.RestHighLevelClient;
-import org.opensearch.client.indices.CreateIndexRequest;
-import org.opensearch.client.indices.GetIndexRequest;
-import org.opensearch.client.indices.GetIndexRequest.Feature;
-import org.opensearch.client.indices.GetIndexResponse;
+import org.opensearch.client.json.jackson3.JacksonJsonpMapper;
+import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.HealthStatus;
+import org.opensearch.client.opensearch._types.PluginStats;
+import org.opensearch.client.opensearch.cluster.HealthRequest;
+import org.opensearch.client.opensearch.cluster.HealthResponse;
+import org.opensearch.client.opensearch.core.GetRequest;
+import org.opensearch.client.opensearch.core.GetResponse;
+import org.opensearch.client.opensearch.indices.GetIndexRequest;
+import org.opensearch.client.opensearch.indices.GetIndexResponse;
+import org.opensearch.client.opensearch.nodes.NodesInfoResponse;
+import org.opensearch.client.opensearch.nodes.OpenSearchNodesClient;
+import org.opensearch.client.opensearch.nodes.info.NodeInfo;
+import org.opensearch.client.transport.rest_client.RestClientOptions;
+import org.opensearch.client.transport.rest_client.RestClientTransport;
 import org.opensearch.cluster.health.ClusterHealthStatus;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -526,19 +533,18 @@ public class SecurityAdmin {
         }
 
         final SSLContext sslContext = sslContext(ts, tspass, tst, ks, kspass, kst, ksAlias, cacert, cert, key, keypass);
-
-        try (
-            RestHighLevelClient restHighLevelClient = getRestHighLevelClient(
+        final OpenSearchClient client = getRestHighLevelClient(
                 sslContext,
                 nhnv,
                 enabledProtocols,
                 enabledCiphers,
                 hostname,
                 port
-            )
-        ) {
+            );
 
-            Response whoAmIRes = restHighLevelClient.getLowLevelClient().performRequest(new Request("GET", "/_plugins/_security/whoami"));
+        try {
+
+            Response whoAmIRes = client.getLowLevelClient().performRequest(new Request("GET", "/_plugins/_security/whoami"));
             if (whoAmIRes.getStatusLine().getStatusCode() != 200) {
                 System.out.println("Unable to check whether cluster is sane because return code was " + whoAmIRes.getStatusLine());
                 return (-1);
@@ -574,7 +580,7 @@ public class SecurityAdmin {
             }
 
             try {
-                if (issueWarnings(restHighLevelClient) != 0) {
+                if (issueWarnings(client) != 0) {
                     return (-1);
                 }
             } catch (Exception e1) {
@@ -584,7 +590,7 @@ public class SecurityAdmin {
 
             if (updateSettings != null) {
                 Settings indexSettings = Settings.builder().put("index.number_of_replicas", updateSettings).build();
-                Response res = restHighLevelClient.getLowLevelClient()
+                Response res = client.getLowLevelClient()
                     .performRequest(new Request("PUT", "/_plugins/_security/configupdate?config_types=" + Joiner.on(",").join(getTypes())));
 
                 if (res.getStatusLine().getStatusCode() != 200) {
@@ -597,7 +603,7 @@ public class SecurityAdmin {
                 if (resNode.get("configupdate_response").get("has_failures").asBoolean()) {
                     System.out.println("ERR: Unable to reload config due to " + responseToString(res, false) + "/" + resNode);
                 }
-                final AcknowledgedResponse response = restHighLevelClient.indices()
+                final AcknowledgedResponse response = client.indices()
                     .putSettings((new UpdateSettingsRequest(index).settings(indexSettings)), RequestOptions.DEFAULT);
                 System.out.println("Reload config on all nodes");
                 System.out.println("Update number of replicas to " + (updateSettings) + " with result: " + response.isAcknowledged());
@@ -605,7 +611,7 @@ public class SecurityAdmin {
             }
 
             if (reload) {
-                Response res = restHighLevelClient.getLowLevelClient()
+                Response res = client.getLowLevelClient()
                     .performRequest(new Request("PUT", "/_plugins/_security/configupdate?config_types=" + Joiner.on(",").join(getTypes())));
 
                 if (res.getStatusLine().getStatusCode() != 200) {
@@ -635,7 +641,7 @@ public class SecurityAdmin {
                 Settings indexSettings = Settings.builder()
                     .put("index.auto_expand_replicas", replicaAutoExpand ? "0-all" : "false")
                     .build();
-                Response res = restHighLevelClient.getLowLevelClient()
+                Response res = client.getLowLevelClient()
                     .performRequest(new Request("PUT", "/_plugins/_security/configupdate?config_types=" + Joiner.on(",").join(getTypes())));
 
                 if (res.getStatusLine().getStatusCode() != 200) {
@@ -648,7 +654,7 @@ public class SecurityAdmin {
                 if (resNode.get("configupdate_response").get("has_failures").asBoolean()) {
                     System.out.println("ERR: Unable to reload config due to " + responseToString(res, false) + "/" + resNode);
                 }
-                final AcknowledgedResponse response = restHighLevelClient.indices()
+                final AcknowledgedResponse response = client.indices()
                     .putSettings((new UpdateSettingsRequest(index).settings(indexSettings)), RequestOptions.DEFAULT);
                 System.out.println("Reload config on all nodes");
                 System.out.println("Auto-expand replicas " + (replicaAutoExpand ? "enabled" : "disabled"));
@@ -656,7 +662,7 @@ public class SecurityAdmin {
             }
 
             if (enableShardAllocation) {
-                final boolean successful = restHighLevelClient.cluster()
+                final boolean successful = client.cluster()
                     .putSettings(
                         new ClusterUpdateSettingsRequest().transientSettings(ENABLE_ALL_ALLOCATIONS_SETTINGS)
                             .persistentSettings(ENABLE_ALL_ALLOCATIONS_SETTINGS),
@@ -678,7 +684,7 @@ public class SecurityAdmin {
             }
 
             if (diagnose) {
-                generateDiagnoseTrace(restHighLevelClient);
+                generateDiagnoseTrace(client);
             }
 
             System.out.println(
@@ -689,15 +695,19 @@ public class SecurityAdmin {
                     + " ..."
             );
 
-            ClusterHealthResponse chResponse = null;
+            HealthResponse chResponse = null;
 
             while (chResponse == null) {
                 try {
-                    final ClusterHealthRequest chRequest = new ClusterHealthRequest().timeout(TimeValue.timeValueMinutes(5));
-                    if (!acceptRedCluster) {
-                        chRequest.waitForYellowStatus();
-                    }
-                    chResponse = restHighLevelClient.cluster().health(chRequest, RequestOptions.DEFAULT);
+                    final HealthRequest chRequest = HealthRequest.of(r -> {
+                        final var builder = r.timeout(f -> f.time("5m"));
+                        if (!acceptRedCluster) {
+                            return builder.waitForStatus(HealthStatus.Yellow);
+                        } else {
+                            return builder;
+                        }
+                    });
+                    chResponse = client.cluster().health(chRequest);
                 } catch (Exception e) {
 
                     Throwable rootCause = ExceptionUtils.getRootCause(e);
@@ -744,7 +754,7 @@ public class SecurityAdmin {
                 }
             }
 
-            final boolean timedOut = chResponse.isTimedOut();
+            final boolean timedOut = chResponse.timedOut();
 
             if (!acceptRedCluster && timedOut) {
                 System.out.println("ERR: Timed out while waiting for a green or yellow cluster state.");
@@ -761,16 +771,16 @@ public class SecurityAdmin {
                 return (-1);
             }
 
-            System.out.println("Clustername: " + chResponse.getClusterName());
-            System.out.println("Clusterstate: " + chResponse.getStatus());
-            System.out.println("Number of nodes: " + chResponse.getNumberOfNodes());
-            System.out.println("Number of data nodes: " + chResponse.getNumberOfDataNodes());
+            System.out.println("Clustername: " + chResponse.clusterName());
+            System.out.println("Clusterstate: " + chResponse.status());
+            System.out.println("Number of nodes: " + chResponse.numberOfNodes());
+            System.out.println("Number of data nodes: " + chResponse.numberOfDataNodes());
 
             GetIndexResponse securityIndex = null;
             try {
-                securityIndex = restHighLevelClient.indices()
-                    .get(new GetIndexRequest(index).addFeatures(Feature.MAPPINGS), RequestOptions.DEFAULT);
-            } catch (OpenSearchStatusException e1) {
+                securityIndex = client.indices()
+                    .get(GetIndexRequest.of(r -> r.index(index)));
+            } catch (org.opensearch.client.opensearch._types.OpenSearchException e1) {
                 if (e1.status() == RestStatus.NOT_FOUND) {
                     // ignore
                 } else {
@@ -780,17 +790,17 @@ public class SecurityAdmin {
             }
             final boolean indexExists = securityIndex != null;
 
-            int expectedNodeCount = restHighLevelClient.cluster()
-                .health(new ClusterHealthRequest(), RequestOptions.DEFAULT)
-                .getNumberOfNodes();
+            int expectedNodeCount = client.cluster()
+                .health(HealthRequest.builder().build())
+                .numberOfNodes();
 
             if (deleteConfigIndex) {
-                return deleteConfigIndex(restHighLevelClient, index, indexExists);
+                return deleteConfigIndex(client, index, indexExists);
             }
 
             if (!indexExists) {
                 System.out.print(index + " index does not exists, attempt to create it ... ");
-                final int created = createConfigIndex(restHighLevelClient, index, explicitReplicas);
+                final int created = createConfigIndex(client, index, explicitReplicas);
                 if (created != 0) {
                     return created;
                 }
@@ -799,18 +809,18 @@ public class SecurityAdmin {
                 System.out.println(index + " index already exists, so we do not need to create one.");
 
                 try {
-                    ClusterHealthResponse clusterHealthResponse = restHighLevelClient.cluster()
-                        .health(new ClusterHealthRequest(index), RequestOptions.DEFAULT);
+                    HealthResponse clusterHealthResponse = client.cluster()
+                        .health(HealthRequest.of(r ->  r.index(index)));
 
-                    if (clusterHealthResponse.isTimedOut()) {
+                    if (clusterHealthResponse.timedOut()) {
                         System.out.println("ERR: Timed out while waiting for " + index + " index state.");
                     }
 
-                    if (clusterHealthResponse.getStatus() == ClusterHealthStatus.RED) {
+                    if (clusterHealthResponse.status() == HealthStatus.Red) {
                         System.out.println("ERR: " + index + " index state is RED.");
                     }
 
-                    if (clusterHealthResponse.getStatus() == ClusterHealthStatus.YELLOW) {
+                    if (clusterHealthResponse.status() == HealthStatus.Yellow) {
                         System.out.println("INFO: " + index + " index state is YELLOW, it seems you miss some replicas");
                     }
 
@@ -874,14 +884,14 @@ public class SecurityAdmin {
                     return (-1);
                 }
 
-                boolean success = uploadFile(restHighLevelClient, file, index, type, resolveEnvVars, timeout);
+                boolean success = uploadFile(client, file, index, type, resolveEnvVars, timeout);
 
                 if (!success) {
                     System.out.println("ERR: cannot upload configuration, see errors above");
                     return -1;
                 }
 
-                Response cur = restHighLevelClient.getLowLevelClient()
+                Response cur = client.getLowLevelClient()
                     .performRequest(new Request("PUT", "/_plugins/_security/configupdate?config_types=" + type));
                 success = checkConfigUpdateResponse(cur, expectedNodeCount, 1) && success;
 
@@ -889,7 +899,9 @@ public class SecurityAdmin {
                 return (success ? 0 : -1);
             }
 
-            return upload(restHighLevelClient, index, cd, expectedNodeCount, resolveEnvVars, timeout);
+            return upload(client, index, cd, expectedNodeCount, resolveEnvVars, timeout);
+        } finally {
+             client._transport().close();
         }
     }
 
@@ -1017,16 +1029,16 @@ public class SecurityAdmin {
     }
 
     private static boolean retrieveFile(
-        final RestHighLevelClient restHighLevelClient,
+        final OpenSearchClient client,
         final String filepath,
         final String index,
         final String _id
     ) {
-        return retrieveFile(restHighLevelClient, filepath, index, _id, false);
+        return retrieveFile(client, filepath, index, _id, false);
     }
 
     private static boolean retrieveFile(
-        final RestHighLevelClient restHighLevelClient,
+        final OpenSearchClient client,
         final String filepath,
         final String index,
         final String _id,
@@ -1037,12 +1049,9 @@ public class SecurityAdmin {
         System.out.println("Will retrieve '" + "/" + id + "' into " + filepath);
         try (Writer writer = new FileWriter(filepath, StandardCharsets.UTF_8)) {
 
-            final GetResponse response = restHighLevelClient.get(
-                new GetRequest(index).id(id).refresh(true).realtime(false),
-                RequestOptions.DEFAULT
-            );
+            final GetResponse<?> response = client.get(GetRequest.of(r -> r.index(index).id(id).refresh(true).realtime(false)), Map.class);
 
-            boolean isEmpty = !response.isExists() || response.isSourceEmpty();
+            boolean isEmpty = !response.found() || response.source() == null;
             String yaml;
             if (isEmpty) {
                 if (populateFileIfEmpty) {
@@ -1052,7 +1061,7 @@ public class SecurityAdmin {
                     return false;
                 }
             } else {
-                yaml = convertToYaml(_id, response.getSourceAsBytesRef(), true);
+                yaml = convertToYaml(_id, response.source(), true);
 
                 if (null == yaml) {
                     System.out.println("ERR: YML conversion error for " + _id);
@@ -1125,7 +1134,7 @@ public class SecurityAdmin {
         }
     }
 
-    protected static void generateDiagnoseTrace(final RestHighLevelClient restHighLevelClient) {
+    protected static void generateDiagnoseTrace(final OpenSearchClient client) {
 
         final String date = DATE_FORMAT.format(new Date());
 
@@ -1245,35 +1254,25 @@ public class SecurityAdmin {
         return new String(console.readPassword("[%s]", passwordName + " password:"));
     }
 
-    private static int issueWarnings(RestHighLevelClient restHighLevelClient) throws IOException {
-        Response res = restHighLevelClient.getLowLevelClient().performRequest(new Request("GET", "/_nodes"));
+    private static int issueWarnings(OpenSearchClient client) throws IOException {
+        NodesInfoResponse res = client.nodes().info();
 
-        if (res.getStatusLine().getStatusCode() != 200) {
-            System.out.println("Unable to get nodes " + res.getStatusLine());
-            return -1;
-        }
-
-        JsonNode resNode = DefaultObjectMapper.objectMapper().readTree(res.getEntity().getContent());
-
-        int nodeCount = Iterators.size(resNode.at("/nodes").iterator());
+        int nodeCount = res.nodes().size();
 
         if (nodeCount > 0) {
-
-            JsonNode[] nodeVersions = Iterators.toArray(resNode.at("/nodes").iterator(), JsonNode.class);
+            Collection<NodeInfo> nodeVersions = res.nodes().values();
 
             Version maxVersion = Version.fromString(
-                Arrays.stream(nodeVersions)
-                    .map(n -> n.at("/version"))
-                    .max((n1, n2) -> Version.fromString(n1.asString()).compareTo(Version.fromString(n2.asString())))
+                    nodeVersions.stream()
+                    .map(n -> n.version())
+                    .max((n1, n2) -> Version.fromString(n1).compareTo(Version.fromString(n2)))
                     .get()
-                    .asString()
             );
             Version minVersion = Version.fromString(
-                Arrays.stream(nodeVersions)
-                    .map(n -> n.at("/version"))
-                    .min((n1, n2) -> Version.fromString(n1.asString()).compareTo(Version.fromString(n2.asString())))
+                    nodeVersions.stream()
+                    .map(n -> n.version())
+                    .min((n1, n2) -> Version.fromString(n1).compareTo(Version.fromString(n2)))
                     .get()
-                    .asString()
             );
 
             if (!maxVersion.equals(minVersion)) {
@@ -1290,9 +1289,9 @@ public class SecurityAdmin {
                 System.out.println("OpenSearch Version: " + minVersion.toString());
             }
 
-            for (JsonNode n : nodeVersions[0].get("plugins")) {
-                if ("org.opensearch.security.OpenSearchSecurityPlugin".equals(n.get("name").asText())) {
-                    System.out.println("OpenSearch Security Version: " + n.get("version"));
+            for (PluginStats n : nodeVersions.iterator().next().plugins()) {
+                if ("org.opensearch.security.OpenSearchSecurityPlugin".equals(n.name())) {
+                    System.out.println("OpenSearch Security Version: " + n.version());
                     break;
                 }
             }
@@ -1304,7 +1303,7 @@ public class SecurityAdmin {
         return 0;
     }
 
-    private static int deleteConfigIndex(RestHighLevelClient restHighLevelClient, String index, boolean indexExists) throws IOException {
+    private static int deleteConfigIndex(OpenSearchClient client, String index, boolean indexExists) throws IOException {
         boolean success = true;
 
         if (indexExists) {
@@ -1317,7 +1316,7 @@ public class SecurityAdmin {
         return (success ? 0 : -1);
     }
 
-    private static int createConfigIndex(RestHighLevelClient restHighLevelClient, String index, String explicitReplicas)
+    private static int createConfigIndex(OpenSearchClient client, String index, String explicitReplicas)
         throws IOException {
         Map<String, Object> indexSettings = new HashMap<>();
         indexSettings.put("index.number_of_shards", 1);
@@ -1346,7 +1345,7 @@ public class SecurityAdmin {
         }
     }
 
-    private static int backup(RestHighLevelClient tc, String index, File backupDir) {
+    private static int backup(OpenSearchClient client, String index, File backupDir) {
         backupDir.mkdirs();
 
         boolean success = retrieveFile(tc, backupDir.getAbsolutePath() + "/config.yml", index, "config");
@@ -1364,7 +1363,7 @@ public class SecurityAdmin {
         return success ? 0 : -1;
     }
 
-    private static int upload(RestHighLevelClient tc, String index, String cd, int expectedNodeCount, boolean resolveEnvVars, int timeout)
+    private static int upload(OpenSearchClient client, String index, String cd, int expectedNodeCount, boolean resolveEnvVars, int timeout)
         throws IOException {
         boolean success = uploadFile(tc, cd + "config.yml", index, "config", resolveEnvVars, timeout);
         success = uploadFile(tc, cd + "roles.yml", index, "roles", resolveEnvVars, timeout) && success;
@@ -1460,7 +1459,7 @@ public class SecurityAdmin {
         return CType.lcStringValues().toArray(new String[0]);
     }
 
-    private static RestHighLevelClient getRestHighLevelClient(
+    private static OpenSearchClient getRestHighLevelClient(
         SSLContext sslContext,
         boolean nhnv,
         String[] enabledProtocols,
@@ -1497,7 +1496,7 @@ public class SecurityAdmin {
             builder.setConnectionManager(cm);
             return builder;
         });
-        return new RestHighLevelClient(restClientBuilder);
+        return new OpenSearchClient(new RestClientTransport(restClientBuilder.build(), new JacksonJsonpMapper(), RestClientOptions.builder().build()));
     }
 
     private static SSLContext sslContext(

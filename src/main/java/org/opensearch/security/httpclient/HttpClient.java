@@ -53,15 +53,16 @@ import org.apache.hc.core5.ssl.SSLContexts;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import org.opensearch.action.index.IndexRequest;
-import org.opensearch.action.index.IndexResponse;
-import org.opensearch.action.support.WriteRequest.RefreshPolicy;
 import org.opensearch.client.Node;
 import org.opensearch.client.RequestOptions;
 import org.opensearch.client.RestClient;
 import org.opensearch.client.RestClientBuilder;
-import org.opensearch.client.RestHighLevelClient;
-import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.client.json.jackson3.JacksonJsonpMapper;
+import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.Refresh;
+import org.opensearch.client.opensearch.core.IndexResponse;
+import org.opensearch.client.transport.rest_client.RestClientOptions;
+import org.opensearch.client.transport.rest_client.RestClientTransport;
 
 public class HttpClient implements Closeable {
 
@@ -143,7 +144,7 @@ public class HttpClient implements Closeable {
 
     private final KeyStore trustStore;
     private final Logger log = LogManager.getLogger(this.getClass());
-    private RestHighLevelClient rclient;
+    private OpenSearchClient rclient;
     private String basicCredentials;
     private KeyStore keystore;
     private String keystoreAlias;
@@ -200,7 +201,7 @@ public class HttpClient implements Closeable {
             }
         });
 
-        rclient = new RestHighLevelClient(builder);
+        rclient = new OpenSearchClient(new RestClientTransport(builder.build(), new JacksonJsonpMapper(), RestClientOptions.builder().build()));
     }
 
     private HttpHost[] createHosts(String[] servers) {
@@ -225,14 +226,11 @@ public class HttpClient implements Closeable {
 
         try {
 
-            final IndexRequest ir = new IndexRequest(index);
+            final IndexResponse response = rclient.index(ir -> ir.index(index)
+                .refresh(refresh ? Refresh.True : Refresh.False)
+                .document(content));
 
-            final IndexResponse response = rclient.index(
-                ir.setRefreshPolicy(refresh ? RefreshPolicy.IMMEDIATE : RefreshPolicy.NONE).source(content, XContentType.JSON),
-                RequestOptions.DEFAULT
-            );
-
-            return response.getShardInfo().getSuccessful() > 0 && response.getShardInfo().getFailed() == 0;
+            return response.shards().successful() > 0 && response.shards().failed() == 0;
 
         } catch (Exception e) {
             log.error(e.toString(), e);
@@ -315,7 +313,7 @@ public class HttpClient implements Closeable {
     @Override
     public void close() throws IOException {
         if (rclient != null) {
-            rclient.close();
+            rclient._transport().close();
         }
     }
 }
